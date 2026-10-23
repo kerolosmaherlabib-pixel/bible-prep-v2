@@ -125,12 +125,12 @@
      * لو سيبتها فاضية الموقع هيشتغل على نفس الجهاز بس (للتجربة).
      *************************************************************************/
     const FIREBASE_CONFIG = {
-      apiKey: 'AIzaSyDz_4axr5pTnehR1UoeGS82irXII76CNIY',
-      authDomain: 'bible-prep-56d13.firebaseapp.com',
-      projectId: 'bible-prep-56d13',
-      storageBucket: 'bible-prep-56d13.firebasestorage.app',
-      messagingSenderId: '322671828243',
-      appId: '1:322671828243:web:5c70b164fff6c8f1a78ee6'
+      apiKey: 'AIzaSyArCbHqYdXzKl6VIKir2p7hMwNZ5jWpVsU',
+      authDomain: 'bible-prep-v2.firebaseapp.com',
+      projectId: 'bible-prep-v2',
+      storageBucket: 'bible-prep-v2.firebasestorage.app',
+      messagingSenderId: '289051952871',
+      appId: '1:289051952871:web:3df40766958751198f0442'
     };
     const FIREBASE_ENABLED = !!(FIREBASE_CONFIG.apiKey && FIREBASE_CONFIG.projectId);
 
@@ -183,7 +183,7 @@
         pendingQueue: {},
         user: null,
         db: null,
-        appId: 'bible-prep-exam-app'
+        appId: 'bible-prep-v2'
       },
 
       // Platform Identity & Global Settings
@@ -1539,9 +1539,16 @@
     });
 
     window.addEventListener('blur', () => {
-      if (appState.examSession && !appState.examSession.isLocked) {
-        triggerAntiCheatKick('فقدان التركيز من نافذة الامتحان (فتح نافذة منبثقة / تقسيم الشاشة / AI)');
-      }
+      // مهلة قصيرة تمنع الطرد الخاطئ لحظة بدء السؤال أو عند فقدان تركيز عابر
+      const sess = appState.examSession;
+      if (!sess || sess.isLocked) return;
+      const startedAgo = Date.now() - (sess.questionStartTime || 0);
+      if (startedAgo < 2000) return;
+      setTimeout(() => {
+        if (appState.examSession && !appState.examSession.isLocked && !document.hasFocus()) {
+          triggerAntiCheatKick('فقدان التركيز من نافذة الامتحان (فتح نافذة منبثقة / تقسيم الشاشة / AI)');
+        }
+      }, 400);
     });
 
     document.addEventListener('contextmenu', (e) => {
@@ -2653,8 +2660,16 @@
       renderApp();
     }
 
+    // يرجع رقم الامتحان المختار فعلاً (ولو المحفوظ قديم أو اتمسح يرجع للامتحان النشط)
+    function resolveReportExamId() {
+      const ids = appState.exams.map(e => e.id);
+      if (ids.includes(appState.selectedExamForReport)) return appState.selectedExamForReport;
+      if (ids.includes(appState.settings.activeExamId)) return appState.settings.activeExamId;
+      return ids[0] || '';
+    }
+
     function exportReportCSV() {
-      const examId = appState.selectedExamForReport;
+      const examId = resolveReportExamId();
       const exam = appState.exams.find(e => e.id === examId);
       const attempts = appState.attempts.filter(a => a.examId === examId);
 
@@ -3577,7 +3592,7 @@
 
     // --- TAB 2: WEEKLY EXAMS & QUESTIONS BUILDER ---
     function renderAdminExamsTab() {
-      const selectedExam = appState.exams.find(e => e.id === appState.selectedExamForEdit) || appState.exams[0];
+      const selectedExam = appState.exams.find(e => e.id === appState.selectedExamForEdit) || appState.exams.find(e => e.id === appState.settings.activeExamId) || appState.exams[0];
       const totalPts = selectedExam ? selectedExam.questions.reduce((s, q) => s + Number(q.points), 0) : 0;
 
       return `
@@ -3698,7 +3713,7 @@
 
     // --- TAB 3: DETAILED TEACHER REPORTS & AI EXPULSIONS ---
     function renderAdminReportsTab() {
-      const selectedExamId = appState.selectedExamForReport || appState.settings.activeExamId;
+      const selectedExamId = resolveReportExamId();
       const exam = appState.exams.find(e => e.id === selectedExamId);
       const allExamAttempts = appState.attempts.filter(a => a.examId === selectedExamId);
 
@@ -3739,10 +3754,16 @@
               </div>
             </div>
 
-            <button onclick="exportReportCSV()" class="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs sm:text-sm shadow-lg transition flex items-center gap-2">
-              <i class="fa-solid fa-file-excel"></i>
-              <span>تحميل التقرير الكامل (Excel CSV)</span>
-            </button>
+            <div class="flex flex-wrap gap-2">
+              <button onclick="clearAllExamAttempts('${selectedExamId}')" class="px-4 py-2.5 rounded-xl bg-rose-950/70 hover:bg-rose-900 text-rose-200 border border-rose-500/30 font-bold text-xs sm:text-sm transition flex items-center gap-2">
+                <i class="fa-solid fa-trash-can"></i>
+                <span>تصفير نتائج هذا الأسبوع</span>
+              </button>
+              <button onclick="exportReportCSV()" class="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs sm:text-sm shadow-lg transition flex items-center gap-2">
+                <i class="fa-solid fa-file-excel"></i>
+                <span>تحميل التقرير الكامل (Excel CSV)</span>
+              </button>
+            </div>
           </div>
 
           <!-- Summary Stats for Selected Exam -->
@@ -3795,7 +3816,11 @@
                           <span class="text-xs font-bold" style="color:${team ? team.color : '#94a3b8'}">${team ? team.name : 'بدون فريق'}</span>
                         </td>
                         <td class="py-3.5">
-                          ${isKicked ? `
+                          ${att.status === 'in_progress' ? `
+                            <span class="px-2.5 py-1 rounded-full text-xs font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 inline-flex items-center gap-1">
+                              <i class="fa-solid fa-hourglass-half"></i> جاري الامتحان
+                            </span>
+                          ` : isKicked ? `
                             <span class="px-2.5 py-1 rounded-full text-xs font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30 inline-flex items-center gap-1">
                               <i class="fa-solid fa-ban"></i> طرد بسبب AI / خروج (س${att.kickedAtQuestion || '?'})
                             </span>
@@ -3832,44 +3857,6 @@
             </div>
           </div>
 
-          <!-- Students Who Haven't Taken the Exam Yet -->
-          <div class="glass-card rounded-3xl p-6 border border-slate-800 space-y-3">
-            <h4 class="text-sm font-extrabold text-slate-300 flex items-center gap-2">
-              <i class="fa-regular fa-clock text-amber-400"></i>
-              <span>أولاد لم يدخلوا هذا الامتحان بعد (${studentsWhoDidNotTake.length}):</span>
-            </h4>
-            <!--Filter & Export Bar -->
-          <div class="glass-card rounded-3xl p-5 border border-slate-800 flex flex-wrap items-center justify-between gap-4">
-            <div class="flex flex-wrap items-center gap-3">
-              <div>
-                <label class="block text-xs text-slate-400 mb-1">اختر الامتحان الأسبوعي:</label>
-                <select onchange="appState.selectedExamForReport=this.value; renderApp();" class="px-4 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white font-bold text-sm outline-none">
-                  ${appState.exams.map(ex => `<option value="${ex.id}" ${ex.id === selectedExamId ? 'selected' : ''}>${ex.title}</option>`).join('')}
-                </select>
-              </div>
-              <div>
-                <label class="block text-xs text-slate-400 mb-1">فلتر الحالة:</label>
-                <select onchange="appState.reportFilterStatus=this.value; renderApp();" class="px-4 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white font-bold text-sm outline-none">
-                  <option value="all" ${appState.reportFilterStatus === 'all' ? 'selected' : ''}>كل الطلاب الممتحنين (${allExamAttempts.length})</option>
-                  <option value="completed" ${appState.reportFilterStatus === 'completed' ? 'selected' : ''}>أكملوا الامتحان بنجاح (${completedCount})</option>
-                  <option value="kicked_ai" ${appState.reportFilterStatus === 'kicked_ai' ? 'selected' : ''}>تم إخراجهم بسبب AI / خروج (${kickedCount})</option>
-                </select>
-              </div>
-            </div>
-
-            <div class="flex flex-wrap gap-2">
-              <button onclick="clearAllExamAttempts('${selectedExamId}')" class="px-4 py-2.5 rounded-xl bg-rose-950/70 hover:bg-rose-900 text-rose-200 border border-rose-500/30 font-bold text-xs sm:text-sm transition flex items-center gap-2">
-                <i class="fa-solid fa-trash-can"></i>
-                <span>تصفير نتائج هذا الأسبوع</span>
-              </button>
-              <button onclick="exportReportCSV()" class="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs sm:text-sm shadow-lg transition flex items-center gap-2">
-                <i class="fa-solid fa-file-excel"></i>
-                <span>تحميل التقرير الكامل (Excel CSV)</span>
-              </button>
-            </div>
-          </div>
-
-          <!-- Summary Stats for Selected Exam -->
           <!-- Students Who Haven't Taken the Exam Yet -->
           <div class="glass-card rounded-3xl p-6 border border-slate-800 space-y-3">
             <h4 class="text-sm font-extrabold text-slate-300 flex items-center gap-2">
