@@ -4,6 +4,10 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>الكتاب المقدس اعدادي - منصة الامتحانات والمسابقات</title>
+  <link rel="manifest" href="manifest.webmanifest" />
+  <meta name="theme-color" content="#0b1120" />
+  <link rel="apple-touch-icon" href="icon-192.png" />
+  <meta name="mobile-web-app-capable" content="yes" />
   <!-- Tailwind CSS -->
   <script src="https://cdn.tailwindcss.com"></script>
   <!-- Google Fonts: Cairo -->
@@ -647,6 +651,8 @@
                   if (updatedMe) {
                     appState.currentUser = updatedMe;
                   }
+                } else {
+                  tryAutoLogin();
                 }
               } else if (id === 'exams' && Array.isArray(data.list)) {
                 appState.exams = data.list;
@@ -1072,6 +1078,25 @@
     /*************************************************************************
      * 4. AUTHENTICATION & SESSION HANDLERS
      *************************************************************************/
+    const SESSION_KEY = 'bible_prep_saved_login_v1';
+    function saveLoginSession(u) {
+      try { localStorage.setItem(SESSION_KEY, JSON.stringify({ username: u.username, password: u.password })); } catch (e) {}
+    }
+    function clearLoginSession() {
+      try { localStorage.removeItem(SESSION_KEY); } catch (e) {}
+    }
+    // دخول تلقائي بالبيانات المحفوظة على نفس الجهاز
+    function tryAutoLogin() {
+      if (appState.currentUser) return false;
+      let saved = null;
+      try { saved = JSON.parse(localStorage.getItem(SESSION_KEY) || 'null'); } catch (e) {}
+      if (!saved || !saved.username) return false;
+      const u = appState.users.find(x => x.username.toLowerCase() === String(saved.username).toLowerCase() && x.password === saved.password);
+      if (!u) return false;
+      appState.currentUser = u;
+      return true;
+    }
+
     function handleLogin(event) {
       if (event) event.preventDefault();
       const usernameInput = document.getElementById('login-username');
@@ -1094,6 +1119,7 @@
       }
 
       appState.currentUser = foundUser;
+      saveLoginSession(foundUser);
 
       // Pick default first permitted tab for sub_admin
       if (foundUser.role === 'sub_admin') {
@@ -1126,6 +1152,7 @@
       }
       appState.currentUser = null;
       appState.examSession = null;
+      clearLoginSession();
       showToast('تم تسجيل الخروج بنجاح', 'info');
       renderApp();
     }
@@ -4257,7 +4284,11 @@
 
     // Start app as soon as the page structure is ready (do not wait for fonts/CDNs)
     function bootApp() {
+      tryAutoLogin();
       renderApp();
+      if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+        navigator.serviceWorker.register('sw.js').catch(() => {});
+      }
       if (typeof window.initCloudSync === 'function') {
         window.initCloudSync();
       }
