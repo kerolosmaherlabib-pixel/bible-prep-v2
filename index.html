@@ -207,6 +207,8 @@
       // Currently Logged-in User
       currentUser: null,
 
+      pendingExamId: null,
+
       // UI Navigation State
       adminActiveTab: 'overview', // overview | exams | users | teams | points | reports | admins | settings
       studentActiveTab: 'dashboard', // dashboard | leaderboard | team
@@ -1160,7 +1162,68 @@
     /*************************************************************************
      * 5. EXAM ENGINE & STRICT ANTI-CHEAT / AI BLOCKER
      *************************************************************************/
-    function startStudentExam() {
+    // ===== السنين الدراسية =====
+    const ALL_GRADES = ['أولى إعدادي', 'ثانية إعدادي', 'ثالثة إعدادي'];
+    const GRADE_SHORT = { 'أولى إعدادي': 'أولى', 'ثانية إعدادي': 'تانية', 'ثالثة إعدادي': 'تالتة' };
+    function examGrades(ex) {
+      return Array.isArray(ex.grades) && ex.grades.length ? ex.grades : ALL_GRADES;
+    }
+    function examIsForStudent(ex, stu) {
+      const g = examGrades(ex);
+      return g.includes(stu.grade) || !ALL_GRADES.includes(stu.grade);
+    }
+    function toggleExamGrade(examId, grade) {
+      if (!hasPerm('manageExams')) return;
+      const ex = appState.exams.find(e => e.id === examId);
+      if (!ex) return;
+      let g = [...examGrades(ex)];
+      g = g.includes(grade) ? g.filter(x => x !== grade) : [...g, grade];
+      if (g.length === 0) {
+        showToast('لازم تسيب سنة واحدة على الأقل للامتحان', 'warning');
+        return;
+      }
+      ex.grades = ALL_GRADES.filter(x => g.includes(x));
+      syncCoreDoc('exams', { list: appState.exams });
+      renderApp();
+    }
+
+    // ===== أكواد الامتحانات =====
+    function genExamCode() {
+      const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+      let code = '';
+      do {
+        code = '';
+        for (let i = 0; i < 5; i++) code += chars[Math.floor(Math.random() * chars.length)];
+      } while (appState.exams.some(e => (e.code || '').toUpperCase() === code));
+      return code;
+    }
+
+    function ensureExamCodes() {
+      if (!appState.currentUser || appState.currentUser.role === 'student') return;
+      if (!hasPerm('manageExams')) return;
+      let changed = false;
+      appState.exams.forEach(e => {
+        if (!e.code) { e.code = genExamCode(); changed = true; }
+      });
+      if (changed) syncCoreDoc('exams', { list: appState.exams });
+    }
+
+    function enterExamByCode() {
+      const input = document.getElementById('exam-code-input');
+      const code = (input?.value || '').trim().toUpperCase();
+      if (!code) {
+        showToast('اكتب كود الامتحان الأول', 'warning');
+        return;
+      }
+      const exam = appState.exams.find(e => (e.code || '').toUpperCase() === code);
+      if (!exam) {
+        showToast('الكود غلط! تأكد منه مع المستر.', 'error');
+        return;
+      }
+      startStudentExam(exam.id);
+    }
+
+    function startStudentExam(examId) {
       const user = appState.currentUser;
       if (!user || user.role !== 'student') return;
 
@@ -1170,12 +1233,24 @@
       }
 
       if (!appState.settings.isExamOpen) {
-        showToast('الامتحان مغلق حالياً من قِبل المستر.', 'warning');
+        showToast('الامتحانات مقفولة حالياً من قِبل المستر.', 'warning');
         return;
       }
 
-      const activeExam = appState.exams.find(e => e.id === appState.settings.activeExamId);
-      if (!activeExam || activeExam.questions.length === 0) {
+      const activeExam = appState.exams.find(e => e.id === examId);
+      if (!activeExam) {
+        showToast('الامتحان غير موجود.', 'error');
+        return;
+      }
+      if (activeExam.isOpen === false) {
+        showToast('هذا الامتحان مقفول حالياً من المستر.', 'warning');
+        return;
+      }
+      if (!examIsForStudent(activeExam, user)) {
+        showToast('هذا الامتحان مش لسنتك الدراسية.', 'error');
+        return;
+      }
+      if (activeExam.questions.length === 0) {
         showToast('لا توجد أسئلة مضافة في هذا الامتحان حتى الآن.', 'warning');
         return;
       }
@@ -1185,9 +1260,11 @@
       );
 
       if (existingAttempt) {
-        showToast('لقد قمت بدخول هذا الامتحان من قبل ولا يمكن إعادته إلا بإذن المستر.', 'error');
+        showToast('لقد دخلت هذا الامتحان من قبل ولا يمكن إعادته إلا بإذن المستر.', 'error');
         return;
       }
+
+      appState.pendingExamId = activeExam.id;
 
       // Open confirmation & anti-cheat warning modal before starting
       openModal(`
@@ -1237,7 +1314,7 @@
     function confirmAndLaunchExam() {
       closeModal();
       const user = appState.currentUser;
-      const activeExam = appState.exams.find(e => e.id === appState.settings.activeExamId);
+      const activeExam = appState.exams.find(e => e.id === appState.pendingExamId);
       if (!user || !activeExam) return;
 
       const firstQ = activeExam.questions[0];
@@ -1799,6 +1876,20 @@
               <label class="block text-xs font-bold text-slate-300 mb-1">وصف أو الشاهد الكتابي للامتحان</label>
               <input id="new-exam-desc" type="text" placeholder="مثال: الأصحاحات من 1 إلى 6" class="w-full px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-white focus:border-amber-500 outline-none" />
             </div>
+            <div>
+              <label class="block text-xs font-bold text-slate-300 mb-1">كود الامتحان (سيبه فاضي ويتولّد تلقائياً)</label>
+              <input id="new-exam-code" type="text" maxlength="12" placeholder="مثال: GEN7K" dir="ltr" class="w-full px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-amber-300 font-mono uppercase focus:border-amber-500 outline-none" />
+            </div>
+            <div>
+              <label class="block text-xs font-bold text-slate-300 mb-1">الامتحان لأي سنة؟</label>
+              <div class="flex flex-wrap gap-3">
+                ${ALL_GRADES.map((g, i) => `
+                  <label class="flex items-center gap-2 text-sm text-slate-200 cursor-pointer">
+                    <input id="new-exam-grade-${i}" type="checkbox" checked class="w-4 h-4 accent-amber-500 rounded" />
+                    <span>${g}</span>
+                  </label>`).join('')}
+              </div>
+            </div>
             <label class="flex items-center gap-2 text-sm text-slate-300 cursor-pointer pt-1">
               <input id="new-exam-make-active" type="checkbox" checked class="w-4 h-4 accent-amber-500 rounded" />
               <span>تعيين هذا الامتحان هو الامتحان النشط للأولاد فوراً</span>
@@ -1822,8 +1913,23 @@
         return;
       }
 
+      let code = (document.getElementById('new-exam-code')?.value || '').trim().toUpperCase();
+      if (code && appState.exams.some(e => (e.code || '').toUpperCase() === code)) {
+        showToast('الكود ده مستخدم في امتحان تاني، اختار كود مختلف.', 'error');
+        return;
+      }
+      if (!code) code = genExamCode();
+      const grades = ALL_GRADES.filter((g, i) => document.getElementById('new-exam-grade-' + i)?.checked);
+      if (grades.length === 0) {
+        showToast('اختار سنة واحدة على الأقل للامتحان', 'warning');
+        return;
+      }
+
       const newExam = {
         id: 'exam_' + Date.now(),
+        code,
+        isOpen: true,
+        grades,
         title,
         description: desc,
         createdAt: new Date().toISOString().slice(0, 10),
@@ -1842,6 +1948,54 @@
 
       closeModal();
       showToast('تم إنشاء الامتحان الأسبوعي الجديد وحفظه سحابياً! أضف الأسئلة الآن.', 'success');
+      renderApp();
+    }
+
+    function copyExamCode(examId) {
+      const ex = appState.exams.find(e => e.id === examId);
+      if (ex && ex.code) copyTextToClipboard(ex.code, `تم نسخ الكود ${ex.code}`);
+    }
+
+    function toggleExamOpenById(examId) {
+      if (!hasPerm('manageExams') && !hasPerm('controlCompetition')) return;
+      const ex = appState.exams.find(e => e.id === examId);
+      if (!ex) return;
+      ex.isOpen = ex.isOpen === false ? true : false;
+      syncCoreDoc('exams', { list: appState.exams });
+      showToast(ex.isOpen ? 'تم فتح الامتحان للأولاد (بالكود)' : 'تم قفل هذا الامتحان', ex.isOpen ? 'success' : 'warning');
+      renderApp();
+    }
+
+    function openChangeCodeModal(examId) {
+      if (!hasPerm('manageExams')) return;
+      const ex = appState.exams.find(e => e.id === examId);
+      if (!ex) return;
+      openModal(`
+        <div class="space-y-4">
+          <h3 class="text-xl font-extrabold text-white">تغيير كود: ${ex.title}</h3>
+          <input id="change-code-input" type="text" maxlength="12" value="${ex.code || ''}" dir="ltr" class="w-full px-4 py-3 rounded-xl bg-slate-900 border border-slate-700 text-amber-300 font-mono text-xl text-center uppercase outline-none focus:border-amber-500" />
+          <div class="flex gap-3">
+            <button onclick="document.getElementById('change-code-input').value = genExamCode()" class="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-bold text-sm">كود عشوائي</button>
+            <button onclick="saveExamCode('${ex.id}')" class="flex-1 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold">حفظ الكود</button>
+            <button onclick="closeModal()" class="px-5 py-2.5 rounded-xl bg-slate-800 text-slate-300 font-bold">إلغاء</button>
+          </div>
+        </div>
+      `);
+    }
+
+    function saveExamCode(examId) {
+      const ex = appState.exams.find(e => e.id === examId);
+      const code = (document.getElementById('change-code-input')?.value || '').trim().toUpperCase();
+      if (!ex) return;
+      if (!code) { showToast('اكتب الكود', 'warning'); return; }
+      if (appState.exams.some(e => e.id !== examId && (e.code || '').toUpperCase() === code)) {
+        showToast('الكود ده مستخدم في امتحان تاني.', 'error');
+        return;
+      }
+      ex.code = code;
+      syncCoreDoc('exams', { list: appState.exams });
+      closeModal();
+      showToast('تم حفظ الكود الجديد', 'success');
       renderApp();
     }
 
@@ -3172,80 +3326,50 @@
 
           ${appState.studentActiveTab === 'dashboard' ? `
             <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-              <!-- Active Weekly Exam Card -->
-              <div class="lg:col-span-2 glass-card rounded-3xl p-6 border border-slate-800 flex flex-col justify-between space-y-5">
-                <div class="space-y-2">
-                  <div class="flex items-center justify-between gap-2">
-                    <span class="px-3 py-1 rounded-full text-xs font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
-                      الامتحان الأسبوعي الحالي
-                    </span>
-                    ${appState.settings.isExamOpen && !appState.settings.isCompetitionEnded
-                      ? '<span class="px-3 py-1 rounded-full text-xs font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">متاح الآن للدخول</span>'
-                      : '<span class="px-3 py-1 rounded-full text-xs font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30">مغلق حالياً</span>'
-                    }
-                  </div>
-                  <h3 class="text-2xl font-black text-white pt-1">${activeExam ? activeExam.title : 'لا يوجد امتحان محدد'}</h3>
-                  <p class="text-sm text-slate-400">${activeExam ? activeExam.description : ''}</p>
+              <!-- Exam Code Entry Card -->
+              <div class="lg:col-span-2 glass-card rounded-3xl p-6 border border-slate-800 space-y-5">
+                <div class="flex items-center justify-between gap-2">
+                  <span class="px-3 py-1 rounded-full text-xs font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                    <i class="fa-solid fa-key ml-1"></i> دخول الامتحان بالكود
+                  </span>
+                  ${appState.settings.isExamOpen && !appState.settings.isCompetitionEnded
+                    ? ''
+                    : '<span class="px-3 py-1 rounded-full text-xs font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30">الامتحانات مقفولة حالياً</span>'
+                  }
+                </div>
+                <div class="space-y-1">
+                  <h3 class="text-2xl font-black text-white">اكتب كود الامتحان</h3>
+                  <p class="text-sm text-slate-400">المستر هيدّيك الكود. بعد ما تكتبه هتشوف تعليمات الامتحان وتبدأ.</p>
+                </div>
+                <div class="flex flex-col sm:flex-row gap-3">
+                  <input id="exam-code-input" type="text" maxlength="12" autocomplete="off" autocapitalize="characters" placeholder="الكود" dir="ltr"
+                    onkeydown="if(event.key==='Enter'){enterExamByCode();}"
+                    class="flex-1 px-4 py-4 rounded-2xl bg-slate-900 border border-slate-700 text-white text-center text-2xl font-black tracking-[0.3em] uppercase outline-none focus:border-amber-500" />
+                  <button onclick="enterExamByCode()" class="px-8 py-4 rounded-2xl bg-gradient-to-l from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-black text-lg shadow-xl transition flex items-center justify-center gap-2">
+                    <i class="fa-solid fa-bolt"></i>
+                    <span>ابدأ</span>
+                  </button>
                 </div>
 
-                ${!activeExam ? `
-                  <div class="p-6 rounded-2xl bg-slate-900/70 text-center text-slate-400">لا يوجد امتحان نشط حالياً.</div>
-                ` : myAttempt ? (
-                  myAttempt.status === 'kicked_ai' ? `
-                    <div class="p-5 rounded-2xl bg-rose-950/60 border border-rose-500/40 space-y-2">
-                      <div class="flex items-center gap-2 text-rose-300 font-extrabold text-base">
-                        <i class="fa-solid fa-ban text-xl"></i>
-                        <span>تم إغلاق الامتحان وإخراجك بسبب مخالفة تعليمات الشاشة!</span>
-                      </div>
-                      <p class="text-xs text-rose-200/90 leading-relaxed">${myAttempt.kickReason}</p>
-                      <div class="text-xs text-amber-300 font-bold pt-1">
-                        الدرجة المحتسبة قبل الإغلاق: ${myAttempt.score} من ${myAttempt.maxScore} نقطة. (تحدث مع المستر إذا كنت ترغب في السماح لك بالإعادة).
-                      </div>
-                    </div>
-                  ` : `
-                    <div class="p-5 rounded-2xl bg-emerald-950/40 border border-emerald-500/40 flex flex-wrap items-center justify-between gap-4">
-                      <div class="space-y-1">
-                        <div class="text-emerald-300 font-extrabold flex items-center gap-2">
-                          <i class="fa-solid fa-circle-check text-xl"></i>
-                          <span>لقد أتممت هذا الامتحان بنجاح!</span>
-                        </div>
-                        <p class="text-xs text-slate-300">تم تسجيل درجتك وإرسال التقرير للمستر.</p>
-                      </div>
-                      <div class="bg-slate-900 px-5 py-3 rounded-2xl border border-emerald-500/30 text-center">
-                        <span class="text-xs text-slate-400 block">درجتك</span>
-                        <span class="text-2xl font-black text-amber-400">${myAttempt.score} / ${myAttempt.maxScore}</span>
-                      </div>
-                    </div>
-                  `
-                ) : !appState.settings.isExamOpen || appState.settings.isCompetitionEnded ? `
-                  <div class="p-5 rounded-2xl bg-slate-900/90 border border-slate-800 text-center space-y-2">
-                    <i class="fa-solid fa-lock text-3xl text-slate-500"></i>
-                    <div class="font-bold text-slate-300">الامتحان مغلق حالياً من قِبل المستر</div>
-                    <p class="text-xs text-slate-500">انتظر حتى يفتح المستر الامتحان في الميعاد المحدد.</p>
-                  </div>
-                ` : `
-                  <div class="space-y-4">
-                    <div class="grid grid-cols-3 gap-3 bg-slate-900/80 p-3.5 rounded-2xl border border-slate-800 text-center text-xs">
-                      <div>
-                        <span class="text-slate-400 block">عدد الأسئلة</span>
-                        <span class="font-extrabold text-white text-base">${activeExam.questions.length}</span>
-                      </div>
-                      <div>
-                        <span class="text-slate-400 block">مجموع النقط</span>
-                        <span class="font-extrabold text-amber-400 text-base">${activeExam.questions.reduce((s, q) => s + Number(q.points), 0)}</span>
-                      </div>
-                      <div>
-                        <span class="text-slate-400 block">حماية الغش / AI</span>
-                        <span class="font-extrabold text-rose-400 text-base">مفعلة 100%</span>
-                      </div>
-                    </div>
-
-                    <button onclick="startStudentExam()" class="w-full py-4 rounded-2xl bg-gradient-to-l from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-black text-lg shadow-xl transition flex items-center justify-center gap-2">
-                      <i class="fa-solid fa-bolt"></i>
-                      <span>ابدأ الامتحان الأسبوعي الآن</span>
-                    </button>
-                  </div>
-                `}
+                <div class="space-y-2 pt-2 border-t border-slate-800">
+                  <h4 class="text-sm font-extrabold text-slate-300">امتحاناتي</h4>
+                  ${(() => {
+                    const mine = appState.attempts.filter(a => a.studentId === user.id && a.status !== 'in_progress');
+                    if (mine.length === 0) return '<div class="text-xs text-slate-500 py-3">لسه ما دخلتش أي امتحان.</div>';
+                    return mine.map(a => {
+                      const ex = appState.exams.find(e => e.id === a.examId);
+                      const kicked = a.status === 'kicked_ai';
+                      return `
+                        <div class="p-3 rounded-xl border ${kicked ? 'bg-rose-950/40 border-rose-500/30' : 'bg-emerald-950/30 border-emerald-500/30'} flex items-center justify-between gap-3 text-sm">
+                          <div class="min-w-0">
+                            <div class="font-bold text-white truncate">${ex ? ex.title : 'امتحان محذوف'}</div>
+                            <div class="text-xs ${kicked ? 'text-rose-300' : 'text-emerald-300'}">${kicked ? 'اتقفل عليك بسبب الخروج من الشاشة (كلم المستر للإعادة)' : 'تم التسليم'}</div>
+                          </div>
+                          <div class="font-black text-amber-400 shrink-0">${a.score} <span class="text-xs text-slate-500">/ ${a.maxScore}</span></div>
+                        </div>`;
+                    }).join('');
+                  })()}
+                </div>
               </div>
 
               <!-- Student Points Log -->
@@ -3635,7 +3759,7 @@
                 >
                   ${appState.exams.map(ex => `
                     <option value="${ex.id}" ${ex.id === selectedExam?.id ? 'selected' : ''}>
-                      ${ex.title} ${ex.id === appState.settings.activeExamId ? ' (النشط حالياً ★)' : ''}
+                      ${ex.title} [${ex.code || '---'}] (${examGrades(ex).map(g => GRADE_SHORT[g] || g).join('، ')}) ${ex.id === appState.settings.activeExamId ? ' (النشط حالياً ★)' : ''}
                     </option>
                   `).join('')}
                 </select>
@@ -3676,7 +3800,15 @@
                   <h3 class="text-xl font-black text-white">${selectedExam.title}</h3>
                   <p class="text-xs text-slate-400">${selectedExam.description}</p>
                 </div>
-                <div class="flex gap-3 text-xs">
+                <div class="flex flex-wrap items-center gap-2 text-xs">
+                  <span class="px-3 py-1.5 rounded-xl bg-slate-900 border border-amber-500/40 font-bold text-slate-300 flex items-center gap-2">
+                    الكود: <strong class="text-amber-300 font-mono text-base tracking-widest" dir="ltr">${selectedExam.code || '---'}</strong>
+                    <button onclick="copyExamCode('${selectedExam.id}')" class="text-slate-400 hover:text-white" title="نسخ"><i class="fa-regular fa-copy"></i></button>
+                    <button onclick="openChangeCodeModal('${selectedExam.id}')" class="text-slate-400 hover:text-white" title="تغيير"><i class="fa-solid fa-pen"></i></button>
+                  </span>
+                  <button onclick="toggleExamOpenById('${selectedExam.id}')" class="px-3 py-1.5 rounded-xl font-bold border transition ${selectedExam.isOpen === false ? 'bg-rose-500/20 border-rose-500/40 text-rose-300' : 'bg-emerald-500/20 border-emerald-500/40 text-emerald-300'}">
+                    <i class="fa-solid ${selectedExam.isOpen === false ? 'fa-lock' : 'fa-lock-open'} ml-1"></i>${selectedExam.isOpen === false ? 'مقفول (اضغط للفتح)' : 'مفتوح بالكود (اضغط للقفل)'}
+                  </button>
                   <span class="px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-800 font-bold text-slate-300">
                     عدد الأسئلة: <strong class="text-white">${selectedExam.questions.length}</strong>
                   </span>
@@ -3684,6 +3816,15 @@
                     مجموع النقط: <strong>${totalPts} نقطة</strong>
                   </span>
                 </div>
+              </div>
+
+              <div class="flex flex-wrap items-center gap-2 text-xs">
+                <span class="text-slate-400 font-bold">الامتحان لـ:</span>
+                ${ALL_GRADES.map(g => {
+                  const on = examGrades(selectedExam).includes(g);
+                  return `<button onclick="toggleExamGrade('${selectedExam.id}', '${g}')" class="px-3.5 py-1.5 rounded-xl font-bold border transition ${on ? 'bg-amber-500 text-slate-950 border-amber-400' : 'bg-slate-900 text-slate-500 border-slate-700 line-through'}">${on ? '<i class="fa-solid fa-check ml-1"></i>' : ''}${g}</button>`;
+                }).join('')}
+                <span class="text-slate-500">(اضغط على السنة عشان تضيفها أو تشيلها)</span>
               </div>
 
               ${selectedExam.questions.length === 0 ? `
@@ -3751,7 +3892,7 @@
       });
 
       const studentsWhoDidNotTake = appState.users.filter(
-        u => u.role === 'student' && !allExamAttempts.some(a => a.studentId === u.id)
+        u => u.role === 'student' && exam && examIsForStudent(exam, u) && !allExamAttempts.some(a => a.studentId === u.id)
       );
 
       const completedCount = allExamAttempts.filter(a => a.status === 'completed').length;
@@ -4279,6 +4420,7 @@
       }
 
       // 4. Otherwise (super_admin or sub_admin) -> show Admin Dashboard
+      ensureExamCodes();
       app.innerHTML = renderAdminDashboard();
     }
 
